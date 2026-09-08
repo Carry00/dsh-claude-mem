@@ -19,6 +19,40 @@ vice versa.
 
 ---
 
+## The problems this solves
+
+**1. Every dsh session starts amnesiac.** The trap you fell into last time, the approach
+you settled on, the root cause you dug out — a new session knows none of it, so you
+explain it again. This is not a context-window problem; the session simply evaporates
+when it ends.
+
+**2. Memory is siloed per tool.** Your history lives in claude-mem, but that is Claude
+Code's store. Switching to dsh means switching brains: each side accumulates its own
+notes and neither can read the other's.
+
+**3. The obvious wiring does not work, and fails silently — this is where the repo
+actually earns its keep.** Do the intuitive thing (point claude-mem's watcher straight at
+`~/.dsh/sessions`) and you get a system whose config looks perfect, whose logs are clean,
+and which ingests exactly nothing. Failures of that shape are miserable to debug alone.
+Each one is documented here with its cause and a check that catches it:
+
+| What you hit | The actual cause |
+|---|---|
+| The watcher never sees any dsh session | The claude-mem worker runs under Bun, whose recursive `fs.watch` adds no inotify watch for directories created after the watch starts — and dsh makes one directory per session. Waiting longer never helps |
+| Watch completely inert, no error anywhere | The watched directory did not exist when the worker started; the watch fails silently and never retries |
+| Long sessions ingest, short ones never do | `startAtEnd: true` — the file is first seen already at its end |
+| The watcher can't read anything | dsh compresses sessions to `.jsonl.zstd` by default |
+| Every dsh session operation throws | After switching to plain text, old `.jsonl.zstd` files remain under the root — a session root may hold only ONE encoding |
+| Sessions relocate out of nowhere | A dsh patch replaces the targeted row's **entire** `config`; anything not restated is dropped |
+| `mcp__claude_mem__*` tools simply absent in dsh | The stdio bridge scrubs env names matching `/KEY\|PASSWORD\|SECRET\|TOKEN/i` and every `DSH_*`, so `env` must be declared explicitly — and you cannot copy `.mcp.json`'s launcher |
+| Memories store chain-of-thought instead of replies | `content[0]` of an `assistant/message` is often a `reasoning` block; the coalesce order was wrong |
+| The agent reports "nothing found" | It will faithfully dress a broken pipe up as an empty result set, with a confident summary attached — always run a positive control |
+
+`scripts/verify.sh` turns every row above into an assertion that can fail, so you never
+have to guess whether the setup actually took.
+
+---
+
 ## Reproducing this with an AI agent
 
 This repo is written to be executed by an agent. Point any coding agent (Claude Code,

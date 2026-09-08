@@ -18,6 +18,35 @@
 
 ---
 
+## 解决的痛点
+
+**一、dsh 每开一个会话都是失忆的。** 上次踩过的坑、定过的方案、排查出的根因，新会话一概
+不知道，你得重讲一遍。这不是上下文窗口不够，是会话结束就散了。
+
+**二、记忆被工具割裂。** 你的历史积累在 claude-mem 里，但那是 Claude Code 的库；换到 dsh
+就等于换了一个大脑，两边各记各的，谁也读不到谁。
+
+**三、天真的接法接不通，而且不报错 —— 这是本仓库真正的价值所在。**
+按直觉去做（让 claude-mem 的 watcher 直接盯 `~/.dsh/sessions`），你会得到一个「配置看起来
+完全正确、日志一片干净、就是一条记忆都不进」的系统。这类静默失效很难自己 debug，本仓库把
+它们连同成因一次性写清并给出可执行的验证：
+
+| 你会撞上的现象 | 真正的成因 |
+|---|---|
+| watcher 永远收不到任何 dsh 会话 | claude-mem worker 跑在 Bun 上，其递归 `fs.watch` 不给 watch 启动后新建的目录挂 inotify；而 dsh 每个会话新建一个目录 —— 多等再久也没用 |
+| watch 完全没动静，且无任何报错 | worker 启动时被监听的目录不存在，watch 静默失效且永不重试 |
+| 长会话进得来，短会话一条不进 | `startAtEnd: true`，文件第一次被发现时已在末尾 |
+| watcher 读不到内容 | dsh 默认把会话压成 `.jsonl.zstd` |
+| dsh 每一次会话操作都抛异常 | 改成明文后，旧的 `.jsonl.zstd` 还留在 root 下 —— 一个 session root 只能有一种编码 |
+| 会话目录莫名搬家 | dsh 的 patch 会**整体替换**目标行的 `config`，没重述的字段直接丢失 |
+| dsh 里根本看不到 `mcp__claude_mem__*` 工具 | stdio bridge 会按 `/KEY\|PASSWORD\|SECRET\|TOKEN/i` 和 `DSH_*` 洗掉环境变量，`env` 必须显式声明；且不能照抄 `.mcp.json` 的启动器 |
+| 摘要里存的是模型的思维链而不是回复 | `assistant/message` 的 `content[0]` 常是 `reasoning` 块，取值顺序错了 |
+| agent 报「搜不到」 | 它会把管道坏掉如实包装成「没有结果」外加一份自信的总结 —— 必须做阳性对照 |
+
+`scripts/verify.sh` 把上面每一条都变成一个会失败的断言，所以你不必靠猜来判断装没装对。
+
+---
+
 ## 用 AI agent 复现
 
 这个仓库是写给 agent 执行的。把仓库 clone 下来，对任意编码 agent（Claude Code、dsh 自己、
