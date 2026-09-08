@@ -1,0 +1,6 @@
+[Unit]
+Description=Publish settled dsh transcripts into the flat claude-mem watch directory
+
+[Service]
+Type=oneshot
+ExecStart=%h/.dsh/cmem-export.sh

@@ -1,0 +1,43 @@
+# Home-level dsh patch layer: ~/.dsh/cordis.patch.yml
+# Applies to every profile; outranks the profile layer.
+#
+# If ~/.dsh/cordis.patch.yml already exists, MERGE these entries into it —
+# read the file first, do not clobber it.
+#
+# Replace both __PLACEHOLDER__ paths with the values discovered in Phase 0.
+
+# --- Write side prerequisite -------------------------------------------------
+# Plain-text session logs, so claude-mem's transcript watcher can tail them.
+#
+# A patch replaces the targeted row's WHOLE `config`, so `root` is restated here.
+# Omitting it silently relocates the session root.
+#
+# A session root belongs to ONE encoding: leaving any *.jsonl.zstd under this
+# root makes dsh's create/open/stat/list throw. Archive old compressed sessions
+# before applying (see AGENTS.md Phase 1).
+- id: session-persistence-jsonl
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: none
+
+# --- Read side ---------------------------------------------------------------
+# claude-mem's MCP search server, exposed inside dsh as mcp__claude_mem__*.
+#
+# Point at mcp-server.cjs DIRECTLY, bypassing the path-probing launcher in
+# .mcp.json — the launcher's probes do not resolve under dsh's spawn env.
+#
+# `env` must be explicit: dsh's stdio bridge scrubs ambient variable names
+# matching /KEY|PASSWORD|SECRET|TOKEN/i and every DSH_* name. These two survive
+# only because they are declared here.
+- insert:
+    - id: claude-mem-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: claude_mem
+        transport: stdio
+        command: node
+        args:
+          - __CM_PLUGIN__/scripts/mcp-server.cjs
+        env:
+          CLAUDE_CONFIG_DIR: __CC_CONFIG__
+          CLAUDE_PLUGIN_ROOT: __CM_PLUGIN__

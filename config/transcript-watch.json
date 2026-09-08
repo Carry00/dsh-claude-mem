@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "schemas": {
+    "dsh": {
+      "name": "dsh",
+      "version": "1",
+      "description": "DeepSeek Harness (dsh) session.v3.jsonl transcripts",
+      "events": [
+        {
+          "name": "dsh-session-header",
+          "match": { "path": "type", "equals": "session" },
+          "action": "session_context",
+          "fields": { "cwd": "cwd" }
+        },
+        {
+          "name": "dsh-user-message",
+          "match": { "path": "data.source.kind", "equals": "user" },
+          "action": "user_message",
+          "fields": { "prompt": "data.content[0].text" }
+        },
+        {
+          "name": "dsh-assistant-message",
+          "match": { "path": "type", "equals": "assistant/message" },
+          "action": "assistant_message",
+          "fields": {
+            "message": {
+              "coalesce": [
+                "data.message.content[1].text",
+                "data.message.content[0].text"
+              ]
+            }
+          }
+        },
+        {
+          "name": "dsh-tool-call",
+          "match": { "path": "type", "equals": "tool/call" },
+          "action": "tool_use",
+          "fields": {
+            "toolId": "data.callId",
+            "toolName": "data.name",
+            "toolInput": "data.arguments"
+          }
+        },
+        {
+          "name": "dsh-tool-result",
+          "match": { "path": "type", "equals": "tool/result" },
+          "action": "tool_result",
+          "fields": {
+            "toolId": "data.message.content[0].toolCallId",
+            "toolResponse": "data.message.content[0].content[0].text"
+          }
+        }
+      ]
+    }
+  },
+  "watches": [
+    {
+      "name": "dsh",
+      "schema": "dsh",
+      "path": "__HOME__/.dsh/sessions-cmem/*.jsonl",
+      "startAtEnd": false
+    }
+  ],
+  "stateFile": "__CM_HOME__/transcript-watch-state.json"
+}
