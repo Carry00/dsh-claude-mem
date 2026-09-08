@@ -1,136 +1,145 @@
 # dsh-claude-mem
 
-*中文 · [English](README.en.md)*
+*[中文](README.zh.md) · English*
 
-把 **DeepSeek Harness（`dsh`）** 接进
-[claude-mem](https://github.com/thedotmack/claude-mem)，让它拥有持久的、跨工具共享的记忆
-—— 和你 Claude Code 会话写入的是同一个记忆库。
+Give **DeepSeek Harness (`dsh`)** a persistent, shared memory by wiring it into
+[claude-mem](https://github.com/thedotmack/claude-mem) — the same memory store your
+Claude Code sessions already write to.
 
-两个方向彼此独立，只装一半也能用：
+Two independent halves, either usable alone:
 
-| 方向 | 作用 | 实现机制 |
+| Direction | What it does | Mechanism |
 |---|---|---|
-| **读** —— dsh → 记忆 | agent 可以 `search` / `get_observations` 检索历史上记录过的一切（Claude Code 的 **和** dsh 的） | 把 claude-mem 的 MCP server 注册成 dsh 的 MCP client |
-| **写** —— dsh → 记忆 | dsh 自己的会话被摘要成 observation，日后可检索 | 给 claude-mem 的 transcript watcher 喂一份 `session.v3.jsonl` 的 schema |
+| **Read** — dsh → memory | The agent can `search` / `get_observations` over everything ever recorded (Claude Code *and* dsh sessions) | claude-mem's MCP server, registered as a dsh MCP client |
+| **Write** — dsh → memory | dsh's own sessions get summarised into observations and become searchable later | claude-mem's transcript watcher, taught the `session.v3.jsonl` schema |
 
-装完之后，dsh 会话和 Claude Code 会话共用一个记忆池：问 dsh「上周关于 X 我们是怎么定的」，
-它能找到你在 Claude Code 里干的活，反过来也一样。
+After setup, a dsh session and a Claude Code session share one memory pool. Ask dsh
+"what did we decide about X last week?" and it finds work done in Claude Code, and
+vice versa.
 
 ---
 
-## 解决的痛点
+## The problems this solves
 
-**一、dsh 每开一个会话都是失忆的。** 上次踩过的坑、定过的方案、排查出的根因，新会话一概
-不知道，你得重讲一遍。这不是上下文窗口不够，是会话结束就散了。
+**1. Every dsh session starts amnesiac.** The trap you fell into last time, the approach
+you settled on, the root cause you dug out — a new session knows none of it, so you
+explain it again. This is not a context-window problem; the session simply evaporates
+when it ends.
 
-**二、记忆被工具割裂。** 你的历史积累在 claude-mem 里，但那是 Claude Code 的库；换到 dsh
-就等于换了一个大脑，两边各记各的，谁也读不到谁。
+**2. Memory is siloed per tool.** Your history lives in claude-mem, but that is Claude
+Code's store. Switching to dsh means switching brains: each side accumulates its own
+notes and neither can read the other's.
 
-**三、天真的接法接不通，而且不报错 —— 这是本仓库真正的价值所在。**
-按直觉去做（让 claude-mem 的 watcher 直接盯 `~/.dsh/sessions`），你会得到一个「配置看起来
-完全正确、日志一片干净、就是一条记忆都不进」的系统。这类静默失效很难自己 debug，本仓库把
-它们连同成因一次性写清并给出可执行的验证：
+**3. The obvious wiring does not work, and fails silently — this is where the repo
+actually earns its keep.** Do the intuitive thing (point claude-mem's watcher straight at
+`~/.dsh/sessions`) and you get a system whose config looks perfect, whose logs are clean,
+and which ingests exactly nothing. Failures of that shape are miserable to debug alone.
+Each one is documented here with its cause and a check that catches it:
 
-| 你会撞上的现象 | 真正的成因 |
+| What you hit | The actual cause |
 |---|---|
-| watcher 永远收不到任何 dsh 会话 | claude-mem worker 跑在 Bun 上，其递归 `fs.watch` 不给 watch 启动后新建的目录挂 inotify；而 dsh 每个会话新建一个目录 —— 多等再久也没用 |
-| watch 完全没动静，且无任何报错 | worker 启动时被监听的目录不存在，watch 静默失效且永不重试 |
-| 长会话进得来，短会话一条不进 | `startAtEnd: true`，文件第一次被发现时已在末尾 |
-| watcher 读不到内容 | dsh 默认把会话压成 `.jsonl.zstd` |
-| dsh 每一次会话操作都抛异常 | 改成明文后，旧的 `.jsonl.zstd` 还留在 root 下 —— 一个 session root 只能有一种编码 |
-| 会话目录莫名搬家 | dsh 的 patch 会**整体替换**目标行的 `config`，没重述的字段直接丢失 |
-| dsh 里根本看不到 `mcp__claude_mem__*` 工具 | stdio bridge 会按 `/KEY\|PASSWORD\|SECRET\|TOKEN/i` 和 `DSH_*` 洗掉环境变量，`env` 必须显式声明；且不能照抄 `.mcp.json` 的启动器 |
-| 摘要里存的是模型的思维链而不是回复 | `assistant/message` 的 `content[0]` 常是 `reasoning` 块，取值顺序错了 |
-| agent 报「搜不到」 | 它会把管道坏掉如实包装成「没有结果」外加一份自信的总结 —— 必须做阳性对照 |
+| The watcher never sees any dsh session | The claude-mem worker runs under Bun, whose recursive `fs.watch` adds no inotify watch for directories created after the watch starts — and dsh makes one directory per session. Waiting longer never helps |
+| Watch completely inert, no error anywhere | The watched directory did not exist when the worker started; the watch fails silently and never retries |
+| Long sessions ingest, short ones never do | `startAtEnd: true` — the file is first seen already at its end |
+| The watcher can't read anything | dsh compresses sessions to `.jsonl.zstd` by default |
+| Every dsh session operation throws | After switching to plain text, old `.jsonl.zstd` files remain under the root — a session root may hold only ONE encoding |
+| Sessions relocate out of nowhere | A dsh patch replaces the targeted row's **entire** `config`; anything not restated is dropped |
+| `mcp__claude_mem__*` tools simply absent in dsh | The stdio bridge scrubs env names matching `/KEY\|PASSWORD\|SECRET\|TOKEN/i` and every `DSH_*`, so `env` must be declared explicitly — and you cannot copy `.mcp.json`'s launcher |
+| Memories store chain-of-thought instead of replies | `content[0]` of an `assistant/message` is often a `reasoning` block; the coalesce order was wrong |
+| The agent reports "nothing found" | It will faithfully dress a broken pipe up as an empty result set, with a confident summary attached — always run a positive control |
 
-`scripts/verify.sh` 把上面每一条都变成一个会失败的断言，所以你不必靠猜来判断装没装对。
-
----
-
-## 用 AI agent 复现
-
-这个仓库是写给 agent 执行的。把仓库 clone 下来，对任意编码 agent（Claude Code、dsh 自己、
-Codex、Cursor……）说：
-
-> 读一下这个仓库里的 `AGENTS.md`，在本机把 dsh ↔ claude-mem 的集成装起来。
-
-`AGENTS.md` 是面向机器的作业手册：前置检查、精确的改动、每一步的验证 gate，以及各个失败
-模式及其成因。`CLAUDE.md` 是它的软链。
-
-想手动装？看 [`docs/SETUP.md`](docs/SETUP.md)。
+`scripts/verify.sh` turns every row above into an assertion that can fail, so you never
+have to guess whether the setup actually took.
 
 ---
 
-## 前置条件
+## Reproducing this with an AI agent
 
-- 装好 `dsh`（DeepSeek Harness）并至少跑过一次，`~/.dsh/` 已存在
-- 装好 claude-mem v13.x，worker 在跑
-- Linux + **systemd user 服务**（`systemctl --user`），或任意 cron 类调度器
-- `node`、`bash`、`sqlite3`、`python3`
+This repo is written to be executed by an agent. Point any coding agent (Claude Code,
+dsh itself, Codex, Cursor, …) at the clone and say:
+
+> Read `AGENTS.md` in this repo and set up the dsh ↔ claude-mem integration on this machine.
+
+`AGENTS.md` is the machine-facing runbook: preflight checks, exact edits, verification
+gates, and the failure modes with their causes. `CLAUDE.md` is a symlink to it.
+
+Doing it by hand instead? Follow [`docs/SETUP.md`](docs/SETUP.md).
 
 ---
 
-## 工作原理
+## Requirements
+
+- `dsh` (DeepSeek Harness) installed, run at least once so `~/.dsh/` exists
+- `claude-mem` v13.x installed with its worker running
+- Linux with **systemd user services** (`systemctl --user`), or any cron-like scheduler
+- `node`, `bash`, `sqlite3`, `python3`
+
+---
+
+## How it works
 
 ```
                     ┌──────────────────────────────┐
-   读   ────────────│  claude-mem MCP server       │◀── Claude Code 写入的同一个库
+   READ  ───────────│  claude-mem MCP server       │◀── the same DB Claude Code writes
                     │  (mcp-server.cjs, stdio)     │
                     └──────────────┬───────────────┘
                                    │ mcp__claude_mem__search …
                     ┌──────────────▼───────────────┐
                     │            dsh               │
                     └──────────────┬───────────────┘
-                                   │ 写 session.v3.jsonl
+                                   │ writes session.v3.jsonl
        ~/.dsh/sessions/<workspace>/<session-id>/session.v3.jsonl
                                    │
-                                   │  静置后硬链接（timer，每 2 分钟）
+                                   │  hardlink, once settled (timer, every 2 min)
                                    ▼
-       ~/.dsh/sessions-cmem/<session-id>.jsonl      ← 扁平、稳定、早已存在的目录
+       ~/.dsh/sessions-cmem/<session-id>.jsonl      ← flat, stable, pre-existing dir
                                    │
                     ┌──────────────▼───────────────┐
-   写   ────────────│  claude-mem transcript watch │──▶ observations, platform_source='dsh'
+   WRITE ───────────│  claude-mem transcript watch │──▶ observations, platform_source='dsh'
                     └──────────────────────────────┘
 ```
 
-### 为什么要多一跳硬链接
+### Why the hardlink hop exists
 
-claude-mem 的 worker 跑在 **Bun** 上，而 Bun 的递归 `fs.watch` **不会**给 watch 启动之后
-才新建的目录挂 inotify。dsh 每个会话开一个新目录，所以正在进行的会话对 watcher 来说是
-结构性不可见的 —— 这不是多等一会儿就能赢的竞态。
+The claude-mem worker runs under **Bun**, and Bun's recursive `fs.watch` does *not*
+register watches for directories created *after* the watch starts. dsh creates a new
+directory per session, so live sessions are structurally invisible to the watcher —
+it is not a race you can win by waiting.
 
-解法是把**已静置**的 transcript（连续 N 秒没被写过，即会话已经停笔）发布到一个 watch 启动
-时**就已经存在**的扁平目录里。那里的深度为 1 的 create 事件是可靠投递的。
+The fix is to publish *settled* transcripts (untouched for N seconds, i.e. the session
+has stopped writing) into one **flat directory that already existed** when the watch
+started. Depth-1 create events there are delivered reliably.
 
-用硬链接而不是拷贝：同一文件系统，不占额外磁盘；而且会话若恢复继续追加，链接同样看得到
-追加内容，watcher 的字节偏移量顺势往前走即可。
+Hardlinks, not copies: same filesystem, no extra disk, and if the session resumes and
+appends, the link sees the appends — the watcher's byte offset simply advances.
 
-代价：会话停笔到记忆可检索之间有 **2–4 分钟延迟**。这是为可靠性主动付的成本。
+Cost: a **2–4 minute delay** between a dsh session going quiet and its memories
+appearing. That is the deliberate trade for reliability.
 
 ---
 
-## 目录结构
+## Layout
 
 ```
-AGENTS.md                    面向机器的作业手册（CLAUDE.md → 软链）
-docs/SETUP.md                手动安装步骤
-docs/TRANSCRIPT-FORMAT.md    dsh session.v3.jsonl 格式说明
-docs/TROUBLESHOOTING.md      症状 → 成因 → 处置
-config/dsh-mcp-client.yml    dsh patch：注册 claude-mem MCP + 会话明文化
-config/transcript-watch.json claude-mem 的 dsh watcher schema
-scripts/install.sh           幂等安装器
-scripts/cmem-export.sh       硬链接发布脚本
-scripts/verify.sh            端到端验证 gate
-scripts/uninstall.sh         完整卸载
+AGENTS.md                    machine-facing runbook (CLAUDE.md → symlink)
+docs/SETUP.md                human step-by-step
+docs/TRANSCRIPT-FORMAT.md    dsh session.v3.jsonl reference
+docs/TROUBLESHOOTING.md      symptom → cause → fix
+config/dsh-mcp-client.yml    dsh patch: register claude-mem MCP + plaintext sessions
+config/transcript-watch.json claude-mem watcher schema for dsh
+scripts/install.sh           idempotent installer
+scripts/cmem-export.sh       the hardlink publisher
+scripts/verify.sh            end-to-end verification gates
+scripts/uninstall.sh         full removal
 systemd/                     user service + timer
 ```
 
-## 隐私
+## Privacy
 
-会话 transcript 里有你输入的一切，以及工具返回的一切。开启之前请先读
-[`docs/PRIVACY.md`](docs/PRIVACY.md)：里面写清了哪些会被采集、哪些不会，以及怎么把某个
-工作区排除掉。
+Session transcripts contain whatever you typed and whatever your tools returned.
+Before turning this on, read [`docs/PRIVACY.md`](docs/PRIVACY.md) — it covers what is
+and is not captured, and how to exclude workspaces.
 
-## 许可证
+## License
 
 MIT
